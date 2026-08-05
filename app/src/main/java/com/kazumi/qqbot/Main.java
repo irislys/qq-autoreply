@@ -1,7 +1,5 @@
 package com.kazumi.qqbot;
 
-import android.util.Log;
-
 import androidx.annotation.NonNull;
 
 import java.lang.reflect.Method;
@@ -15,16 +13,18 @@ import io.github.libxposed.api.XposedModule;
 
 public class Main extends XposedModule {
 
-    public static final String TAG = "KazumiQQBot";
-    public static final String QQ_PACKAGE = "com.tencent.mobileqq";
+    private static final String QQ_PACKAGE = "com.tencent.mobileqq";
+
+    private static final String KERNEL_SERVICE = "com.tencent.qqnt.kernel.api.impl.KernelServiceImpl";
+    private static final String MSG_SERVICE = "com.tencent.qqnt.kernel.api.impl.MsgService";
+    private static final String MSG_LISTENER_WRAPPER = "com.tencent.qqnt.kernel.api.impl.mk";
 
     private Object msgService;
+    private Method sendMsgMethod;
     private final Set<String> recentReplies = new HashSet<>();
-    private final Set<String> hookedListenerClasses = new HashSet<>();
 
     @Override
     public void onModuleLoaded(@NonNull ModuleLoadedParam param) {
-        Log.i(TAG, "KazumiQQBot module loaded in process: " + param.getProcessName());
     }
 
     @Override
@@ -32,126 +32,79 @@ public class Main extends XposedModule {
         if (!QQ_PACKAGE.equals(param.getPackageName())) {
             return;
         }
-        Log.i(TAG, "QQ package ready, installing hooks...");
         ClassLoader cl = param.getClassLoader();
         try {
-            installServiceHooks(cl);
-            installListenerHooks(cl);
-            Log.i(TAG, "All hooks installed successfully");
-        } catch (Throwable t) {
-            Log.e(TAG, "Failed to install hooks", t);
+            hookMsgService(cl);
+        } catch (Throwable ignored) {
         }
-    }
-
-    private void installServiceHooks(@NonNull ClassLoader cl) throws Throwable {
-        Class<?> kernelService = Class.forName("com.tencent.qqnt.kernel.api.impl.KernelServiceImpl", false, cl);
-        Class<?> msgServiceClass = Class.forName("com.tencent.qqnt.kernel.api.impl.MsgService", false, cl);
-
-        for (Method m : kernelService.getDeclaredMethods()) {
-            if (m.getName().equals("getMsgService") && m.getParameterTypes().length == 0) {
-                m.setAccessible(true);
-                hook(m).setExceptionMode(ExceptionMode.PROTECTIVE).intercept(chain -> {
-                    Object result = null;
-                    try {
-                        result = chain.proceed();
-                    } catch (Throwable t) {
-                        Log.e(TAG, "getMsgService proceed failed", t);
-                    }
-                    if (result != null) {
-                        msgService = result;
-                        Log.i(TAG, "Captured MsgService instance: " + msgService.getClass().getName());
-                    }
-                    return result;
-                });
-                Log.i(TAG, "Hooked KernelServiceImpl.getMsgService");
-                break;
-            }
-        }
-
-        for (Method m : msgServiceClass.getDeclaredMethods()) {
-            if (m.getName().equals("sendMsg")) {
-                m.setAccessible(true);
-                hook(m).setExceptionMode(ExceptionMode.PROTECTIVE).intercept(chain -> {
-                    if (msgService == null) {
-                        msgService = chain.getThisObject();
-                    }
-                    return chain.proceed();
-                });
-                Log.i(TAG, "Hooked MsgService.sendMsg: " + m.toGenericString());
-                break;
-            }
-        }
-
-        for (Method m : msgServiceClass.getDeclaredMethods()) {
-            if (m.getName().equals("addMsgListener")) {
-                m.setAccessible(true);
-                hook(m).setExceptionMode(ExceptionMode.PROTECTIVE).intercept(chain -> {
-                    Object result;
-                    try {
-                        result = chain.proceed();
-                    } catch (Throwable t) {
-                        Log.e(TAG, "addMsgListener proceed failed", t);
-                        result = null;
-                    }
-                    if (msgService == null) {
-                        msgService = chain.getThisObject();
-                    }
-                    List<Object> args = chain.getArgs();
-                    if (!args.isEmpty() && args.get(0) != null) {
-                        Object listener = args.get(0);
-                        hookListenerClass(listener.getClass(), cl);
-                    }
-                    return result;
-                });
-                Log.i(TAG, "Hooked MsgService.addMsgListener");
-                break;
-            }
-        }
-    }
-
-    private void installListenerHooks(@NonNull ClassLoader cl) throws Throwable {
-        Class<?> listenerInterface = Class.forName("com.tencent.qqnt.kernel.nativeinterface.IKernelMsgListener", false, cl);
-        for (Method m : listenerInterface.getDeclaredMethods()) {
-            if (m.getName().equals("onRecvMsg")) {
-                m.setAccessible(true);
-                hook(m).setExceptionMode(ExceptionMode.PROTECTIVE).intercept(chain -> {
-                    List<Object> args = chain.getArgs();
-                    if (!args.isEmpty() && args.get(0) != null) {
-                        handleRecvMsgs(args.get(0));
-                    }
-                    return chain.proceed();
-                });
-                Log.i(TAG, "Hooked IKernelMsgListener.onRecvMsg interface");
-                break;
-            }
-        }
-    }
-
-    private void hookListenerClass(Class<?> clazz, ClassLoader cl) {
         try {
-            String key = clazz.getName();
-            if (!hookedListenerClasses.add(key)) {
-                return;
-            }
-            Class<?> current = clazz;
-            while (current != null && current != Object.class) {
-                for (Method m : current.getDeclaredMethods()) {
-                    if (m.getName().equals("onRecvMsg") && m.getParameterTypes().length == 1) {
-                        m.setAccessible(true);
-                        hook(m).setExceptionMode(ExceptionMode.PROTECTIVE).intercept(chain -> {
-                            List<Object> args = chain.getArgs();
-                            if (!args.isEmpty() && args.get(0) != null) {
-                                handleRecvMsgs(args.get(0));
-                            }
-                            return chain.proceed();
-                        });
-                        Log.i(TAG, "Hooked onRecvMsg on " + clazz.getName());
-                    }
+            hookListenerWrapper(cl);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void hookMsgService(@NonNull ClassLoader cl) throws Throwable {
+        Class<?> kernelService = Class.forName(KERNEL_SERVICE, false, cl);
+        Class<?> msgServiceClass = Class.forName(MSG_SERVICE, false, cl);
+
+        Method getMsgService = findMethod(kernelService, "getMsgService");
+        if (getMsgService != null) {
+            getMsgService.setAccessible(true);
+            hook(getMsgService).setExceptionMode(ExceptionMode.PROTECTIVE).intercept(chain -> {
+                Object result;
+                try {
+                    result = chain.proceed();
+                } catch (Throwable ignored) {
+                    result = null;
                 }
-                current = current.getSuperclass();
+                if (result != null) {
+                    msgService = result;
+                    cacheSendMsgMethod();
+                }
+                return result;
+            });
+        }
+
+        Method sendMsg = findMethod(msgServiceClass, "sendMsg");
+        if (sendMsg != null) {
+            sendMsg.setAccessible(true);
+            hook(sendMsg).setExceptionMode(ExceptionMode.PROTECTIVE).intercept(chain -> {
+                if (msgService == null) {
+                    msgService = chain.getThisObject();
+                    cacheSendMsgMethod();
+                }
+                return chain.proceed();
+            });
+        }
+    }
+
+    private void hookListenerWrapper(@NonNull ClassLoader cl) throws Throwable {
+        Class<?> wrapper = Class.forName(MSG_LISTENER_WRAPPER, false, cl);
+        Method onRecvMsg = findSingleArgMethod(wrapper, "onRecvMsg");
+        if (onRecvMsg == null) {
+            return;
+        }
+        onRecvMsg.setAccessible(true);
+        hook(onRecvMsg).setExceptionMode(ExceptionMode.PROTECTIVE).intercept(chain -> {
+            List<Object> args = chain.getArgs();
+            if (!args.isEmpty() && args.get(0) != null) {
+                handleRecvMsgs(args.get(0));
             }
-        } catch (Throwable t) {
-            Log.e(TAG, "Failed to hook listener class " + clazz.getName(), t);
+            return chain.proceed();
+        });
+    }
+
+    private void cacheSendMsgMethod() {
+        try {
+            if (sendMsgMethod == null && msgService != null) {
+                ClassLoader cl = msgService.getClass().getClassLoader();
+                Class<?> contactClass = Class.forName("com.tencent.qqnt.kernelpublic.nativeinterface.Contact", false, cl);
+                Class<?> callbackClass = Class.forName("com.tencent.qqnt.kernel.nativeinterface.IOperateCallback", false, cl);
+                sendMsgMethod = msgService.getClass().getDeclaredMethod("sendMsg",
+                        long.class, contactClass, ArrayList.class, HashMap.class, callbackClass);
+                sendMsgMethod.setAccessible(true);
+            }
+        } catch (Throwable ignored) {
         }
     }
 
@@ -161,20 +114,17 @@ public class Main extends XposedModule {
             if (!(msgListObj instanceof List)) {
                 return;
             }
-            List<Object> msgList = (List<Object>) msgListObj;
-            for (Object msg : msgList) {
+            for (Object msg : (List<Object>) msgListObj) {
                 handleMsg(msg);
             }
-        } catch (Throwable t) {
-            Log.e(TAG, "Error handling received messages", t);
+        } catch (Throwable ignored) {
         }
     }
 
     private void handleMsg(Object msgRecord) {
         try {
             Object chatType = getField(msgRecord, "chatType");
-            int chatTypeInt = chatType instanceof Integer ? (Integer) chatType : -1;
-            if (chatTypeInt != 1) {
+            if (!(chatType instanceof Integer) || (Integer) chatType != 1) {
                 return;
             }
 
@@ -190,10 +140,7 @@ public class Main extends XposedModule {
             }
 
             String content = extractTextContent(msgRecord);
-            Log.i(TAG, "Private message from " + senderUid + ": " + content);
-
-            if (content != null && content.trim().equals(".")) {
-                Log.d(TAG, "Ignore message already our reply");
+            if (content == null || content.trim().equals(".")) {
                 return;
             }
 
@@ -204,8 +151,7 @@ public class Main extends XposedModule {
 
             String peerUid = String.valueOf(getField(msgRecord, "peerUid"));
             reply(peerUid, ".");
-        } catch (Throwable t) {
-            Log.e(TAG, "Error handling message", t);
+        } catch (Throwable ignored) {
         }
     }
 
@@ -226,13 +172,12 @@ public class Main extends XposedModule {
                 }
             }
             return sb.length() > 0 ? sb.toString() : null;
-        } catch (Throwable t) {
-            Log.e(TAG, "Error extracting text content", t);
+        } catch (Throwable ignored) {
             return null;
         }
     }
 
-    private Object getField(Object obj, String name) throws NoSuchFieldException, IllegalAccessException {
+    private Object getField(Object obj, String name) {
         Class<?> c = obj.getClass();
         while (c != null) {
             try {
@@ -241,15 +186,16 @@ public class Main extends XposedModule {
                 return f.get(obj);
             } catch (NoSuchFieldException e) {
                 c = c.getSuperclass();
+            } catch (Throwable ignored) {
+                return null;
             }
         }
-        throw new NoSuchFieldException(name + " in " + obj.getClass().getName());
+        return null;
     }
 
     private void reply(String peerUid, String text) {
         try {
-            if (msgService == null) {
-                Log.w(TAG, "msgService not available yet, cannot reply");
+            if (msgService == null || sendMsgMethod == null) {
                 return;
             }
             ClassLoader cl = msgService.getClass().getClassLoader();
@@ -279,21 +225,28 @@ public class Main extends XposedModule {
             Class<?> callbackClass = Class.forName("com.tencent.qqnt.kernel.nativeinterface.IOperateCallback", false, cl);
             Object callback = java.lang.reflect.Proxy.newProxyInstance(cl,
                     new Class[]{callbackClass},
-                    (proxy, method, args) -> {
-                        if (method.getName().equals("onResult")) {
-                            Log.i(TAG, "sendMsg onResult: code=" + (args != null && args.length > 0 ? args[0] : "?")
-                                    + " msg=" + (args != null && args.length > 1 ? args[1] : "?"));
-                        }
-                        return null;
-                    });
+                    (proxy, method, args) -> null);
 
-            Method sendMsg = msgService.getClass().getDeclaredMethod("sendMsg",
-                    long.class, contactClass, ArrayList.class, HashMap.class, callbackClass);
-            sendMsg.setAccessible(true);
-            sendMsg.invoke(msgService, 0L, contact, elements, new HashMap<>(), callback);
-            Log.i(TAG, "Auto-replied to " + peerUid + ": " + text);
-        } catch (Throwable t) {
-            Log.e(TAG, "Failed to send reply", t);
+            sendMsgMethod.invoke(msgService, 0L, contact, elements, new HashMap<>(), callback);
+        } catch (Throwable ignored) {
         }
+    }
+
+    private static Method findMethod(Class<?> clazz, String name) {
+        for (Method m : clazz.getDeclaredMethods()) {
+            if (m.getName().equals(name)) {
+                return m;
+            }
+        }
+        return null;
+    }
+
+    private static Method findSingleArgMethod(Class<?> clazz, String name) {
+        for (Method m : clazz.getDeclaredMethods()) {
+            if (m.getName().equals(name) && m.getParameterTypes().length == 1) {
+                return m;
+            }
+        }
+        return null;
     }
 }
