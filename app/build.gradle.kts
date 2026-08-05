@@ -18,7 +18,18 @@ android {
         release {
             isMinifyEnabled = false
             isShrinkResources = false
-            signingConfig = signingConfigs["debug"]
+            signingConfig = signingConfigs["release"]
+        }
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = rootProject.file("release.keystore")
+            storePassword = "kazumiqqbot"
+            keyAlias = "kazumi"
+            keyPassword = "kazumiqqbot"
+            enableV1Signing = true
+            enableV2Signing = true
         }
     }
 
@@ -30,7 +41,10 @@ android {
     packaging {
         resources {
             merges += "META-INF/xposed/*"
-            excludes += "**"
+            excludes += "META-INF/*.version"
+            excludes += "META-INF/*.kotlin_module"
+            excludes += "**/proguard.txt"
+            excludes += "**/kotlin/**"
         }
     }
 
