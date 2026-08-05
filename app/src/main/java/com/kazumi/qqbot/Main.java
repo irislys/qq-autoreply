@@ -266,10 +266,12 @@ public class Main extends XposedModule {
 
             Class<?> msgElementClass = Class.forName("com.tencent.qqnt.kernel.nativeinterface.MsgElement", false, cl);
             Object msgElement = msgElementClass.getDeclaredConstructor().newInstance();
-            msgElementClass.getDeclaredMethod("setElementType", int.class).setAccessible(true)
-                    .invoke(msgElement, 1);
-            msgElementClass.getDeclaredMethod("setTextElement", textElementClass).setAccessible(true)
-                    .invoke(msgElement, textElement);
+            Method setElementType = msgElementClass.getDeclaredMethod("setElementType", int.class);
+            setElementType.setAccessible(true);
+            setElementType.invoke(msgElement, 1);
+            Method setTextElement = msgElementClass.getDeclaredMethod("setTextElement", textElementClass);
+            setTextElement.setAccessible(true);
+            setTextElement.invoke(msgElement, textElement);
 
             ArrayList<Object> elements = new ArrayList<>();
             elements.add(msgElement);
