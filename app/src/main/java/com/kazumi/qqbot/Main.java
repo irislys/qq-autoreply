@@ -138,21 +138,30 @@ public class Main extends XposedModule {
         }
     }
 
+    private final Set<String> hookedListenerClasses = new HashSet<>();
+
     private void hookListenerClass(Class<?> clazz, ClassLoader cl) {
         try {
-            for (Method m : clazz.getDeclaredMethods()) {
-                if (m.getName().equals("onRecvMsg") && m.getParameterTypes().length == 1) {
-                    m.setAccessible(true);
-                    hook(m).setExceptionMode(ExceptionMode.PROTECTIVE).intercept(chain -> {
-                        List<Object> args = chain.getArgs();
-                        if (!args.isEmpty() && args.get(0) != null) {
-                            handleRecvMsgs(args.get(0));
-                        }
-                        return chain.proceed();
-                    });
-                    Log.i(TAG, "Hooked onRecvMsg on " + clazz.getName());
-                    return;
+            String key = clazz.getName();
+            if (!hookedListenerClasses.add(key)) {
+                return;
+            }
+            Class<?> current = clazz;
+            while (current != null && current != Object.class) {
+                for (Method m : current.getDeclaredMethods()) {
+                    if (m.getName().equals("onRecvMsg") && m.getParameterTypes().length == 1) {
+                        m.setAccessible(true);
+                        hook(m).setExceptionMode(ExceptionMode.PROTECTIVE).intercept(chain -> {
+                            List<Object> args = chain.getArgs();
+                            if (!args.isEmpty() && args.get(0) != null) {
+                                handleRecvMsgs(args.get(0));
+                            }
+                            return chain.proceed();
+                        });
+                        Log.i(TAG, "Hooked onRecvMsg on " + clazz.getName());
+                    }
                 }
+                current = current.getSuperclass();
             }
         } catch (Throwable t) {
             Log.e(TAG, "Failed to hook listener class " + clazz.getName(), t);
