@@ -14,14 +14,6 @@ android {
         versionName = "1.0"
     }
 
-    buildTypes {
-        release {
-            isMinifyEnabled = false
-            isShrinkResources = false
-            signingConfig = signingConfigs["release"]
-        }
-    }
-
     signingConfigs {
         create("release") {
             storeFile = rootProject.file("release.keystore")
@@ -30,6 +22,14 @@ android {
             keyPassword = "kazumiqqbot"
             enableV1Signing = true
             enableV2Signing = true
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            isShrinkResources = false
+            signingConfig = signingConfigs["release"]
         }
     }
 
