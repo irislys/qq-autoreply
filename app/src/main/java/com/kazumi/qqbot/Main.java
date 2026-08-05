@@ -19,23 +19,12 @@ public class Main extends XposedModule {
     public static final String QQ_PACKAGE = "com.tencent.mobileqq";
 
     private Object msgService;
-    private Object selfUid;
     private final Set<String> recentReplies = new HashSet<>();
-
-    public Main() {
-    }
+    private final Set<String> hookedListenerClasses = new HashSet<>();
 
     @Override
     public void onModuleLoaded(@NonNull ModuleLoadedParam param) {
         Log.i(TAG, "KazumiQQBot module loaded in process: " + param.getProcessName());
-    }
-
-    @Override
-    public void onPackageLoaded(@NonNull PackageLoadedParam param) {
-        if (!QQ_PACKAGE.equals(param.getPackageName())) {
-            return;
-        }
-        Log.i(TAG, "QQ package loaded, classloader: " + param.getDefaultClassLoader());
     }
 
     @Override
@@ -138,8 +127,6 @@ public class Main extends XposedModule {
         }
     }
 
-    private final Set<String> hookedListenerClasses = new HashSet<>();
-
     private void hookListenerClass(Class<?> clazz, ClassLoader cl) {
         try {
             String key = clazz.getName();
@@ -192,7 +179,7 @@ public class Main extends XposedModule {
             }
 
             Object senderUid = getField(msgRecord, "senderUid");
-            if (senderUid == null || senderUid.equals(selfUid)) {
+            if (senderUid == null) {
                 return;
             }
 
