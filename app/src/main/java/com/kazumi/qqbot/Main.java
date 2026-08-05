@@ -19,12 +19,15 @@ public class Main extends XposedModule {
     private static final String MSG_SERVICE = "com.tencent.qqnt.kernel.api.impl.MsgService";
     private static final String MSG_LISTENER_WRAPPER = "com.tencent.qqnt.kernel.api.impl.mk";
 
+    private static final String TAG = "KazumiQQBot";
+
     private Object msgService;
     private Method sendMsgMethod;
     private final Set<String> recentReplies = new HashSet<>();
 
     @Override
     public void onModuleLoaded(@NonNull ModuleLoadedParam param) {
+        dbg("module loaded in " + param.getProcessName());
     }
 
     @Override
@@ -32,14 +35,19 @@ public class Main extends XposedModule {
         if (!QQ_PACKAGE.equals(param.getPackageName())) {
             return;
         }
+        dbg("package ready, installing hooks");
         ClassLoader cl = param.getClassLoader();
         try {
             hookMsgService(cl);
-        } catch (Throwable ignored) {
+            dbg("msgService hooks done");
+        } catch (Throwable t) {
+            dbg("msgService hooks failed: " + t);
         }
         try {
             hookListenerWrapper(cl);
-        } catch (Throwable ignored) {
+            dbg("listener wrapper hooks done");
+        } catch (Throwable t) {
+            dbg("listener wrapper hooks failed: " + t);
         }
     }
 
@@ -60,9 +68,13 @@ public class Main extends XposedModule {
                 if (result != null) {
                     msgService = result;
                     cacheSendMsgMethod();
+                    dbg("captured msgService " + result.getClass().getName());
                 }
                 return result;
             });
+            dbg("hooked KernelServiceImpl.getMsgService");
+        } else {
+            dbg("getMsgService method not found");
         }
 
         Method sendMsg = findMethod(msgServiceClass, "sendMsg");
@@ -72,26 +84,44 @@ public class Main extends XposedModule {
                 if (msgService == null) {
                     msgService = chain.getThisObject();
                     cacheSendMsgMethod();
+                    dbg("captured msgService via sendMsg " + msgService.getClass().getName());
                 }
                 return chain.proceed();
             });
+            dbg("hooked MsgService.sendMsg");
+        } else {
+            dbg("sendMsg method not found");
         }
     }
 
     private void hookListenerWrapper(@NonNull ClassLoader cl) throws Throwable {
-        Class<?> wrapper = Class.forName(MSG_LISTENER_WRAPPER, false, cl);
-        Method onRecvMsg = findSingleArgMethod(wrapper, "onRecvMsg");
-        if (onRecvMsg == null) {
+        Class<?> wrapper;
+        try {
+            wrapper = Class.forName(MSG_LISTENER_WRAPPER, false, cl);
+        } catch (Throwable t) {
+            dbg("wrapper class not found: " + t);
             return;
         }
+        dbg("wrapper class loaded: " + wrapper.getName());
+        Method onRecvMsg = findSingleArgMethod(wrapper, "onRecvMsg");
+        if (onRecvMsg == null) {
+            dbg("wrapper onRecvMsg not found, methods: " + java.util.Arrays.toString(wrapper.getDeclaredMethods()));
+            return;
+        }
+        dbg("wrapper onRecvMsg found: " + onRecvMsg.toGenericString());
         onRecvMsg.setAccessible(true);
         hook(onRecvMsg).setExceptionMode(ExceptionMode.PROTECTIVE).intercept(chain -> {
+            dbg("onRecvMsg intercepted");
             List<Object> args = chain.getArgs();
             if (!args.isEmpty() && args.get(0) != null) {
+                dbg("onRecvMsg args[0]=" + args.get(0).getClass().getName() + " size=" + (args.get(0) instanceof List ? ((List<?>) args.get(0)).size() : "?"));
                 handleRecvMsgs(args.get(0));
+            } else {
+                dbg("onRecvMsg empty args");
             }
             return chain.proceed();
         });
+        dbg("hooked wrapper onRecvMsg");
     }
 
     private void cacheSendMsgMethod() {
@@ -103,8 +133,10 @@ public class Main extends XposedModule {
                 sendMsgMethod = msgService.getClass().getDeclaredMethod("sendMsg",
                         long.class, contactClass, ArrayList.class, HashMap.class, callbackClass);
                 sendMsgMethod.setAccessible(true);
+                dbg("cached sendMsg method");
             }
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            dbg("cache sendMsg failed: " + t);
         }
     }
 
@@ -112,12 +144,16 @@ public class Main extends XposedModule {
     private void handleRecvMsgs(Object msgListObj) {
         try {
             if (!(msgListObj instanceof List)) {
+                dbg("recv msgs not a list: " + msgListObj.getClass().getName());
                 return;
             }
-            for (Object msg : (List<Object>) msgListObj) {
+            List<Object> msgList = (List<Object>) msgListObj;
+            dbg("recv msgs size=" + msgList.size());
+            for (Object msg : msgList) {
                 handleMsg(msg);
             }
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            dbg("handleRecvMsgs error: " + t);
         }
     }
 
@@ -125,22 +161,27 @@ public class Main extends XposedModule {
         try {
             Object chatType = getField(msgRecord, "chatType");
             if (!(chatType instanceof Integer) || (Integer) chatType != 1) {
+                dbg("skip msg, chatType=" + chatType);
                 return;
             }
 
             Object senderUid = getField(msgRecord, "senderUid");
             if (senderUid == null) {
+                dbg("skip msg, no senderUid");
                 return;
             }
 
             Object msgId = getField(msgRecord, "msgId");
             String key = String.valueOf(msgId);
             if (recentReplies.contains(key)) {
+                dbg("skip duplicate msg " + key);
                 return;
             }
 
             String content = extractTextContent(msgRecord);
+            dbg("private msg from " + senderUid + ": " + content);
             if (content == null || content.trim().equals(".")) {
+                dbg("skip reply content");
                 return;
             }
 
@@ -150,8 +191,10 @@ public class Main extends XposedModule {
             }
 
             String peerUid = String.valueOf(getField(msgRecord, "peerUid"));
+            dbg("replying to " + peerUid + ": " + content);
             reply(peerUid, ".");
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            dbg("handleMsg error: " + t);
         }
     }
 
@@ -196,6 +239,7 @@ public class Main extends XposedModule {
     private void reply(String peerUid, String text) {
         try {
             if (msgService == null || sendMsgMethod == null) {
+                dbg("reply skipped, msgService=" + (msgService != null) + " sendMsgMethod=" + (sendMsgMethod != null));
                 return;
             }
             ClassLoader cl = msgService.getClass().getClassLoader();
@@ -228,6 +272,15 @@ public class Main extends XposedModule {
                     (proxy, method, args) -> null);
 
             sendMsgMethod.invoke(msgService, 0L, contact, elements, new HashMap<>(), callback);
+            dbg("reply sent to " + peerUid);
+        } catch (Throwable t) {
+            dbg("reply error: " + t);
+        }
+    }
+
+    private void dbg(String msg) {
+        try {
+            log(4, TAG, msg);
         } catch (Throwable ignored) {
         }
     }
