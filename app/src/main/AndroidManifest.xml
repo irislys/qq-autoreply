@@ -2,7 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <application
-        android:label="Kazumi QQ Bot"
+        android:label="@string/app_name"
+        android:description="@string/app_description"
         android:theme="@android:style/Theme.DeviceDefault"
         android:allowBackup="false"
         android:hasCode="true" />
