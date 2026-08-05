@@ -86,6 +86,15 @@ public class Main extends XposedModule {
                     cacheSendMsgMethod();
                     dbg("captured msgService via sendMsg " + msgService.getClass().getName());
                 }
+                try {
+                    List<Object> args = chain.getArgs();
+                    if (args.size() >= 2 && args.get(1) != null) {
+                        Object peer = args.get(1);
+                        dbg("sendMsg peer=" + peer);
+                        dbg("sendMsg elements=" + (args.size() >= 3 ? String.valueOf(args.get(2)) : "?"));
+                    }
+                } catch (Throwable ignored) {
+                }
                 return chain.proceed();
             });
             dbg("hooked MsgService.sendMsg");
@@ -264,12 +273,19 @@ public class Main extends XposedModule {
 
             Class<?> contactClass = Class.forName("com.tencent.qqnt.kernelpublic.nativeinterface.Contact", false, cl);
             Object contact = contactClass.getDeclaredConstructor(int.class, String.class, String.class)
-                    .newInstance(1, "", peerUid);
+                    .newInstance(1, peerUid, "");
+            dbg("reply contact=" + contact);
 
             Class<?> callbackClass = Class.forName("com.tencent.qqnt.kernel.nativeinterface.IOperateCallback", false, cl);
             Object callback = java.lang.reflect.Proxy.newProxyInstance(cl,
                     new Class[]{callbackClass},
-                    (proxy, method, args) -> null);
+                    (proxy, method, args) -> {
+                        if ("onResult".equals(method.getName())) {
+                            dbg("reply onResult code=" + (args != null && args.length > 0 ? args[0] : "?")
+                                    + " msg=" + (args != null && args.length > 1 ? args[1] : "?"));
+                        }
+                        return null;
+                    });
 
             sendMsgMethod.invoke(msgService, 0L, contact, elements, new HashMap<>(), callback);
             dbg("reply sent to " + peerUid);
