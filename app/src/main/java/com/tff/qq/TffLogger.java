@@ -1,123 +1,96 @@
 package com.tff.qq;
 
-import android.content.ComponentName;
-import android.content.Context;
-import android.content.Intent;
-import android.content.ServiceConnection;
-import android.os.IBinder;
-
 import androidx.annotation.NonNull;
 
-import java.lang.reflect.Method;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 
 import io.github.libxposed.api.XposedModule;
 
-/**
- * IPC client living in the hooked app process (QQ). All root / file work is
- * delegated to TffDaemonService which runs in the module's own process (:tff).
- */
-public class TffLogger implements ServiceConnection {
+public class TffLogger {
+
+    public static final int MODE_NONE = 0;
+    public static final int MODE_1 = 1;
+    public static final int MODE_2 = 2;
+
+    private static final String TAG = "TFFQQBot";
+    private static final String MODE_FILE = "/data/user/0/com.tff.qq/files/mode";
 
     private final XposedModule module;
-    private final CountDownLatch latch = new CountDownLatch(1);
-    private volatile ITffDaemon daemon;
-    private volatile int mode = TffConstants.MODE_NONE;
-    private Context appContext;
+    private final int mode;
 
-    public TffLogger(@NonNull XposedModule module) {
+    public TffLogger(@NonNull XposedModule module, int mode) {
         this.module = module;
+        this.mode = mode;
     }
 
     /**
-     * Binds the daemon and resolves the mode.
-     *
-     * @param fresh true on first load (full init, clears logs), false on hot
-     *              reload (mode only, keeps logs)
-     * @return the resolved mode (MODE_1 / MODE_2 / MODE_NO_ROOT / MODE_CONFLICT /
-     *         MODE_INIT_FAIL)
+     * Writes to the LSPosed framework log with an obvious per-mode prefix.
      */
-    public int connect(boolean fresh) {
-        try {
-            appContext = getAppContext();
-            if (appContext == null) {
-                return TffConstants.MODE_INIT_FAIL;
-            }
-            Context moduleCtx = appContext.createPackageContext(
-                    TffConstants.DAEMON_PACKAGE,
-                    Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY);
-            Intent intent = new Intent().setClassName(
-                    TffConstants.DAEMON_PACKAGE, TffConstants.DAEMON_SERVICE);
-            if (!moduleCtx.bindService(intent, this, Context.BIND_AUTO_CREATE)) {
-                return TffConstants.MODE_INIT_FAIL;
-            }
-            if (!latch.await(15, TimeUnit.SECONDS)) {
-                try {
-                    moduleCtx.unbindService(this);
-                } catch (Throwable ignored) {
-                }
-                return TffConstants.MODE_INIT_FAIL;
-            }
-            ITffDaemon d = daemon;
-            if (d == null) {
-                return TffConstants.MODE_INIT_FAIL;
-            }
-            mode = fresh ? d.init() : d.getMode();
-            return mode;
-        } catch (Throwable t) {
-            return TffConstants.MODE_INIT_FAIL;
-        }
-    }
-
-    public int getMode() {
-        return mode;
-    }
-
     public void log(@NonNull String msg) {
-        ITffDaemon d = daemon;
-        if (d == null || mode < TffConstants.MODE_1) {
-            return;
-        }
         try {
-            d.log(mode, msg);
+            module.log(4, TAG, prefix(mode) + " " + msg);
         } catch (Throwable ignored) {
         }
     }
 
-    public void shutdown() {
+    public static String prefix(int mode) {
+        return mode == MODE_2 ? "[TFFQQ][模式2]" : "[TFFQQ][模式1]";
+    }
+
+    // ------------------------------------------------------------------
+    // mode file: written by the module UI process, read once by QQ process
+    // ------------------------------------------------------------------
+
+    /**
+     * Reads the mode file. Called once per process start.
+     * Missing / unreadable file falls back to the default mode 1.
+     */
+    public static int readMode() {
         try {
-            if (appContext != null) {
-                appContext.unbindService(this);
+            File f = new File(MODE_FILE);
+            if (!f.exists() || !f.canRead()) {
+                return MODE_1;
             }
-        } catch (Throwable ignored) {
-        }
-        daemon = null;
-    }
-
-    @Override
-    public void onServiceConnected(ComponentName name, IBinder service) {
-        daemon = ITffDaemon.Stub.asInterface(service);
-        latch.countDown();
-    }
-
-    @Override
-    public void onServiceDisconnected(ComponentName name) {
-        daemon = null;
-    }
-
-    private Context getAppContext() {
-        try {
-            Class<?> at = Class.forName("android.app.ActivityThread");
-            Method current = at.getDeclaredMethod("currentActivityThread");
-            Object thread = current.invoke(null);
-            if (thread == null) {
-                return null;
+            try (FileInputStream in = new FileInputStream(f)) {
+                byte[] buf = new byte[8];
+                int n = in.read(buf);
+                if (n <= 0) {
+                    return MODE_1;
+                }
+                String s = new String(buf, 0, n, "UTF-8").trim();
+                if ("2".equals(s)) {
+                    return MODE_2;
+                }
+                return MODE_1;
             }
-            Method getSystemContext = at.getDeclaredMethod("getSystemContext");
-            return (Context) getSystemContext.invoke(thread);
         } catch (Throwable t) {
-            return null;
+            return MODE_1;
+        }
+    }
+
+    /**
+     * Writes the mode file (UI process, own uid). Also relaxes the files dir
+     * permission so the QQ process can read it, and normalizes the file mode.
+     */
+    public static boolean writeMode(int mode) {
+        try {
+            File dir = new File("/data/user/0/com.tff.qq/files");
+            if (!dir.exists()) {
+                dir.mkdirs();
+            }
+            dir.setExecutable(true, false);
+            dir.setReadable(true, false);
+            File f = new File(MODE_FILE);
+            try (FileOutputStream out = new FileOutputStream(f)) {
+                out.write(String.valueOf(mode).getBytes("UTF-8"));
+                out.flush();
+            }
+            f.setReadable(true, false);
+            return true;
+        } catch (Throwable t) {
+            return false;
         }
     }
 }

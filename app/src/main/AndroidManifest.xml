@@ -8,11 +8,15 @@
         android:allowBackup="false"
         android:hasCode="true">
 
-        <service
-            android:name=".TffDaemonService"
+        <activity
+            android:name=".TffModeActivity"
             android:exported="true"
-            android:process=":tff"
-            android:label="TFF Daemon" />
+            android:label="TFF QQ 模式切换">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
 
     </application>
 
