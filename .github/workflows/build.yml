@@ -28,6 +28,9 @@ jobs:
           KAZUMI_KEY_PASSWORD: ${{ secrets.KAZUMI_KEY_PASSWORD }}
         run: |
           echo "$KAZUMI_KEYSTORE_B64" | base64 -d > release.keystore
+          ls -la release.keystore
+          sha256sum release.keystore
+          keytool -list -keystore release.keystore -storepass "$KAZUMI_STORE_PASSWORD" -alias kazumi -keypass "$KAZUMI_KEY_PASSWORD" | head -6
           echo "KAZUMI_STORE_PASSWORD=$KAZUMI_STORE_PASSWORD" >> "$GITHUB_ENV"
           echo "KAZUMI_KEY_PASSWORD=$KAZUMI_KEY_PASSWORD" >> "$GITHUB_ENV"
 
