@@ -17,6 +17,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "kazumi-qq-autoreply"
+rootProject.name = "TFF-QQ"
 
 include(":app")

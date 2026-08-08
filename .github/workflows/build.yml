@@ -23,16 +23,16 @@ jobs:
 
       - name: Restore signing keystore
         env:
-          KAZUMI_KEYSTORE_B64: ${{ secrets.KAZUMI_KEYSTORE_B64 }}
-          KAZUMI_STORE_PASSWORD: ${{ secrets.KAZUMI_STORE_PASSWORD }}
-          KAZUMI_KEY_PASSWORD: ${{ secrets.KAZUMI_KEY_PASSWORD }}
+          TFF_KEYSTORE_B64: ${{ secrets.TFF_KEYSTORE_B64 }}
+          TFF_STORE_PASSWORD: ${{ secrets.TFF_STORE_PASSWORD }}
+          TFF_KEY_PASSWORD: ${{ secrets.TFF_KEY_PASSWORD }}
         run: |
-          echo "$KAZUMI_KEYSTORE_B64" | base64 -d > release.keystore
+          echo "$TFF_KEYSTORE_B64" | base64 -d > release.keystore
           ls -la release.keystore
           sha256sum release.keystore
-          keytool -list -keystore release.keystore -storepass "$KAZUMI_STORE_PASSWORD" -alias kazumi -keypass "$KAZUMI_KEY_PASSWORD" | head -6
-          echo "KAZUMI_STORE_PASSWORD=$KAZUMI_STORE_PASSWORD" >> "$GITHUB_ENV"
-          echo "KAZUMI_KEY_PASSWORD=$KAZUMI_KEY_PASSWORD" >> "$GITHUB_ENV"
+          keytool -list -keystore release.keystore -storepass "$TFF_STORE_PASSWORD" -alias tff -keypass "$TFF_KEY_PASSWORD" | head -6
+          echo "TFF_STORE_PASSWORD=$TFF_STORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "TFF_KEY_PASSWORD=$TFF_KEY_PASSWORD" >> "$GITHUB_ENV"
 
       - name: Build with Gradle
         run: chmod +x gradlew && ./gradlew assembleRelease --stacktrace
@@ -40,7 +40,7 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v7
         with:
-          name: kazumi-qq-autoreply-apk
+          name: tff-qq-apk
           path: app/build/outputs/apk/release/*.apk
 
       - name: Upload build logs

@@ -17,17 +17,17 @@ fun signingCred(name: String, envName: String): String {
         ?: error("缺少签名凭据 $name：请设置环境变量 $envName 或在 local.properties 中配置 $name")
 }
 
-val keystorePath = System.getenv("KAZUMI_KEYSTORE_PATH")
-    ?: localProps.getProperty("kazumi.keystorePath")
+val keystorePath = System.getenv("TFF_KEYSTORE_PATH")
+    ?: localProps.getProperty("tff.keystorePath")
     ?: rootProject.file("release.keystore").absolutePath
-val keystoreAlias = System.getenv("KAZUMI_KEY_ALIAS")
-    ?: localProps.getProperty("kazumi.keyAlias")
-    ?: "kazumi"
-val storePass = signingCred("kazumi.storePassword", "KAZUMI_STORE_PASSWORD")
-val keyPass = signingCred("kazumi.keyPassword", "KAZUMI_KEY_PASSWORD")
+val keystoreAlias = System.getenv("TFF_KEY_ALIAS")
+    ?: localProps.getProperty("tff.keyAlias")
+    ?: "tff"
+val storePass = signingCred("tff.storePassword", "TFF_STORE_PASSWORD")
+val keyPass = signingCred("tff.keyPassword", "TFF_KEY_PASSWORD")
 
 android {
-    namespace = "com.kazumi.qqbot"
+    namespace = "com.tff.qq"
     compileSdk = 37
     buildToolsVersion = "37.0.0"
 

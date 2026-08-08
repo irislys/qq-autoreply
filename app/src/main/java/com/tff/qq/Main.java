@@ -1,4 +1,4 @@
-package com.kazumi.qqbot;
+package com.tff.qq;
 
 import androidx.annotation.NonNull;
 
@@ -34,7 +34,7 @@ public class Main extends XposedModule {
     }
 
     private static final String QQ_PACKAGE = "com.tencent.mobileqq";
-    private static final String TAG = "KazumiQQBot";
+    private static final String TAG = "TFFQQBot";
 
     private static final String CONTACT_CLASS = "com.tencent.qqnt.kernelpublic.nativeinterface.Contact";
     private static final String CALLBACK_CLASS = "com.tencent.qqnt.kernel.nativeinterface.IOperateCallback";
@@ -140,7 +140,7 @@ public class Main extends XposedModule {
                 resolveThread = null;
                 installTargets();
             }
-        }, "KazumiResolve");
+        }, "TFFResolve");
         t.setDaemon(true);
         resolveThread = t;
         t.start();
