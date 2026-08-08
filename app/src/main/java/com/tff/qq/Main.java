@@ -21,10 +21,12 @@ public class Main extends XposedModule {
 
     private static final String CONTACT_CLASS = "com.tencent.qqnt.kernelpublic.nativeinterface.Contact";
     private static final String CALLBACK_CLASS = "com.tencent.qqnt.kernel.nativeinterface.IOperateCallback";
+    private static final String KERNEL_SERVICE_IMPL = "com.tencent.qqnt.kernel.api.impl.KernelServiceImpl";
 
     private static final String ID_LOAD_CLASS = "loadClass";
     private static final String ID_GET_MSG_SERVICE = "getMsgService";
     private static final String ID_SEND_MSG = "sendMsg";
+    private static final String ID_ADD_MSG_LISTENER = "addMsgListener";
     private static final String ID_ON_RECV_MSG = "onRecvMsg";
 
     private static final String ID_PROBE_RESUME = "probe.onResume";
@@ -37,17 +39,6 @@ public class Main extends XposedModule {
     private volatile int mode = TffLogger.MODE_NONE;
 
     private volatile ClassLoader hostCl;
-    private volatile String hostAppPath;
-    private volatile Thread resolveThread;
-    private volatile boolean resolvingDone;
-    private volatile boolean installing;
-
-    private volatile String kernelServiceName;
-    private volatile String msgServiceImplName;
-    private volatile String sendMsgName;
-    private volatile String[] sendMsgParamTypes;
-    private volatile String listenerWrapperName;
-    private volatile String listenerParamType;
 
     private final Set<String> installed = new HashSet<>();
     private Map<Executable, XposedInterface.HookHandle> oldHandles;
@@ -77,25 +68,22 @@ public class Main extends XposedModule {
             installProbeHooks();
             return;
         }
-        dbg("package ready, starting dynamic resolution");
+        dbg("package ready, installing kernel hooks");
         hostCl = param.getClassLoader();
-        hostAppPath = param.getApplicationInfo().sourceDir;
         hookClassLoaderLoad();
-        startResolution();
+        installGetMsgServiceHook();
     }
 
     @Override
     public boolean onHotReloading(@NonNull HotReloadingParam param) {
-        Thread t = resolveThread;
-        if (t != null) {
-            t.interrupt();
-        }
         if (mode != TffLogger.MODE_1 && mode != TffLogger.MODE_2) {
             dbg("hot reload rejected: mode=" + mode);
             return false;
         }
         try {
-            param.setSavedInstanceState(mode == TffLogger.MODE_1 ? hostCl : null);
+            Object state = mode == TffLogger.MODE_1
+                    ? (msgService != null ? msgService : hostCl) : null;
+            param.setSavedInstanceState(state);
         } catch (Throwable th) {
             dbg("hot reload rejected: save state failed " + th);
             return false;
@@ -125,65 +113,34 @@ public class Main extends XposedModule {
             return;
         }
         Object state = param.getSavedInstanceState();
-        if (!(state instanceof ClassLoader)) {
-            dbg("hot reloaded but classloader state lost, hooks not reinstalled");
-            return;
-        }
-        hostCl = (ClassLoader) state;
-        hostAppPath = null;
-        hookClassLoaderLoad();
-        startResolution();
-    }
-
-    // ------------------------------------------------------------------
-    // dynamic resolution
-    // ------------------------------------------------------------------
-
-    private void startResolution() {
-        if (resolveThread != null) {
-            return;
-        }
-        Thread t = new Thread(() -> {
+        if (state instanceof ClassLoader) {
+            hostCl = (ClassLoader) state;
+        } else if (state != null) {
+            msgService = state;
             try {
-                resolveAll();
-            } catch (Throwable th) {
-                dbg("resolution error: " + th);
-            } finally {
-                resolvingDone = true;
-                resolveThread = null;
-                installTargets();
+                hostCl = msgService.getClass().getClassLoader();
+            } catch (Throwable ignored) {
             }
-        }, "TFFResolve");
-        t.setDaemon(true);
-        resolveThread = t;
-        t.start();
-    }
-
-    private void resolveAll() {
-        if (hostAppPath == null) {
-            dbg("resolution skipped: no host apk path");
+        } else {
+            dbg("hot reloaded but state lost, hooks not reinstalled");
             return;
         }
-        try {
-            String moduleApkPath = getModuleApplicationInfo().sourceDir;
-            try (DexResolver dr = DexResolver.create(moduleApkPath, hostAppPath)) {
-                dr.resolve();
-                kernelServiceName = dr.kernelServiceName;
-                msgServiceImplName = dr.msgServiceImplName;
-                sendMsgName = dr.sendMsgName;
-                sendMsgParamTypes = dr.sendMsgParamTypes;
-                listenerWrapperName = dr.listenerWrapperName;
-                listenerParamType = dr.listenerParamType;
-                dbg("resolution done: kernel=" + kernelServiceName + " msgService=" + msgServiceImplName
-                        + " sendMsg=" + sendMsgName + " listener=" + listenerWrapperName);
-            }
-        } catch (Throwable t) {
-            dbg("resolution error: " + t);
+        hookClassLoaderLoad();
+        installGetMsgServiceHook();
+        if (msgService != null) {
+            cacheSendMsgMethod();
+            installSendMsgHook();
+            installListenerAnchorHook();
         }
+        restoreListenerHookFromOldHandles();
     }
 
     // ------------------------------------------------------------------
-    // lazy hook installation driven by ClassLoader.loadClass
+    // anchor-based hook chain (no dex parsing, no feature search)
+    //
+    // ClassLoader.loadClass -> KernelServiceImpl.getMsgService
+    //   -> captured msgService -> sendMsg (name + signature match)
+    //   -> addMsgListener -> captured listener -> onRecvMsg (name + List param)
     // ------------------------------------------------------------------
 
     private void hookClassLoaderLoad() {
@@ -194,8 +151,8 @@ public class Main extends XposedModule {
                 Object result = chain.proceed();
                 try {
                     Object arg = chain.getArg(0);
-                    if (arg instanceof String && isTargetClass((String) arg)) {
-                        installTargets();
+                    if (arg instanceof String && KERNEL_SERVICE_IMPL.equals(arg)) {
+                        installGetMsgServiceHook();
                     }
                 } catch (Throwable ignored) {
                 }
@@ -207,75 +164,129 @@ public class Main extends XposedModule {
         }
     }
 
-    private boolean isTargetClass(String name) {
-        return name.equals(kernelServiceName)
-                || name.equals(msgServiceImplName)
-                || name.equals(listenerWrapperName);
-    }
-
-    private synchronized void installTargets() {
-        if (!resolvingDone || hostCl == null || installing) {
-            return;
-        }
-        installing = true;
-        try {
-            installGetMsgServiceHook();
-            installSendMsgHook();
-            installListenerHook();
-        } finally {
-            installing = false;
-        }
-    }
-
-    private void installGetMsgServiceHook() {
-        if (installed.contains(ID_GET_MSG_SERVICE) || kernelServiceName == null) {
+    private synchronized void installGetMsgServiceHook() {
+        if (installed.contains(ID_GET_MSG_SERVICE) || hostCl == null) {
             return;
         }
         try {
-            Class<?> kernelService = Class.forName(kernelServiceName, false, hostCl);
+            Class<?> kernelService = Class.forName(KERNEL_SERVICE_IMPL, false, hostCl);
             Method m = kernelService.getDeclaredMethod("getMsgService");
             m.setAccessible(true);
             installOrReplace(ID_GET_MSG_SERVICE, m, this::hookGetMsgService);
             installed.add(ID_GET_MSG_SERVICE);
-            dbg("hooked " + kernelServiceName + ".getMsgService");
+            dbg("hooked KernelServiceImpl.getMsgService");
         } catch (Throwable t) {
             dbg("getMsgService hook pending: " + t);
         }
     }
 
     private void installSendMsgHook() {
-        if (installed.contains(ID_SEND_MSG) || msgServiceImplName == null || sendMsgName == null) {
+        if (installed.contains(ID_SEND_MSG) || msgService == null) {
+            return;
+        }
+        if (sendMsgMethod == null) {
+            cacheSendMsgMethod();
+        }
+        if (sendMsgMethod == null) {
             return;
         }
         try {
-            Class<?> msgServiceClass = Class.forName(msgServiceImplName, false, hostCl);
-            Class<?>[] paramTypes = resolveParamTypes(sendMsgParamTypes);
-            Method m = msgServiceClass.getDeclaredMethod(sendMsgName, paramTypes);
-            m.setAccessible(true);
-            sendMsgMethod = m;
-            installOrReplace(ID_SEND_MSG, m, this::hookSendMsg);
+            installOrReplace(ID_SEND_MSG, sendMsgMethod, this::hookSendMsg);
             installed.add(ID_SEND_MSG);
-            dbg("hooked " + msgServiceImplName + "." + sendMsgName);
+            dbg("hooked sendMsg");
         } catch (Throwable t) {
             dbg("sendMsg hook pending: " + t);
         }
     }
 
-    private void installListenerHook() {
-        if (installed.contains(ID_ON_RECV_MSG) || listenerWrapperName == null) {
+    private void installListenerAnchorHook() {
+        if (installed.contains(ID_ADD_MSG_LISTENER) || msgService == null) {
             return;
         }
         try {
-            Class<?> wrapper = Class.forName(listenerWrapperName, false, hostCl);
-            Class<?>[] paramTypes = resolveParamTypes(new String[]{listenerParamType});
-            Method m = wrapper.getDeclaredMethod("onRecvMsg", paramTypes);
-            m.setAccessible(true);
-            installOrReplace(ID_ON_RECV_MSG, m, this::hookOnRecvMsg);
-            installed.add(ID_ON_RECV_MSG);
-            dbg("hooked " + listenerWrapperName + ".onRecvMsg");
+            Class<?> cl = msgService.getClass();
+            for (Method m : cl.getDeclaredMethods()) {
+                if ("addMsgListener".equals(m.getName()) && m.getParameterCount() == 1) {
+                    m.setAccessible(true);
+                    installOrReplace(ID_ADD_MSG_LISTENER, m, this::hookAddMsgListener);
+                    installed.add(ID_ADD_MSG_LISTENER);
+                    dbg("hooked addMsgListener");
+                    return;
+                }
+            }
+            dbg("addMsgListener not found on " + cl.getName());
+        } catch (Throwable t) {
+            dbg("addMsgListener hook pending: " + t);
+        }
+    }
+
+    private void installListenerHook(Object listener) {
+        if (installed.contains(ID_ON_RECV_MSG) || listener == null) {
+            return;
+        }
+        try {
+            Class<?> cl = listener.getClass();
+            for (Method m : cl.getDeclaredMethods()) {
+                if ("onRecvMsg".equals(m.getName()) && m.getParameterCount() == 1) {
+                    Class<?> pt = m.getParameterTypes()[0];
+                    if (List.class.isAssignableFrom(pt)) {
+                        m.setAccessible(true);
+                        installOrReplace(ID_ON_RECV_MSG, m, this::hookOnRecvMsg);
+                        installed.add(ID_ON_RECV_MSG);
+                        dbg("hooked listener.onRecvMsg");
+                        return;
+                    }
+                }
+            }
+            dbg("listener onRecvMsg not found on " + cl.getName());
         } catch (Throwable t) {
             dbg("listener hook pending: " + t);
         }
+    }
+
+    private void restoreListenerHookFromOldHandles() {
+        if (installed.contains(ID_ON_RECV_MSG) || oldHandles == null) {
+            return;
+        }
+        for (Executable e : oldHandles.keySet()) {
+            if (e instanceof Method && "onRecvMsg".equals(((Method) e).getName())) {
+                Method m = (Method) e;
+                m.setAccessible(true);
+                installOrReplace(ID_ON_RECV_MSG, m, this::hookOnRecvMsg);
+                installed.add(ID_ON_RECV_MSG);
+                dbg("restored onRecvMsg from old handle");
+                return;
+            }
+        }
+    }
+
+    private void cacheSendMsgMethod() {
+        if (sendMsgMethod != null || msgService == null) {
+            return;
+        }
+        try {
+            Class<?> contact = Class.forName(CONTACT_CLASS, false, hostCl);
+            Class<?> callback = Class.forName(CALLBACK_CLASS, false, hostCl);
+            Class<?> cl = msgService.getClass();
+            for (Method m : cl.getDeclaredMethods()) {
+                if (isSendMsgSignature(m, contact, callback)) {
+                    m.setAccessible(true);
+                    sendMsgMethod = m;
+                    return;
+                }
+            }
+        } catch (Throwable t) {
+            dbg("cache sendMsg failed: " + t);
+        }
+    }
+
+    private boolean isSendMsgSignature(Method m, Class<?> contact, Class<?> callback) {
+        Class<?>[] pts = m.getParameterTypes();
+        return pts.length == 5 && pts[0] == long.class
+                && pts[1] == contact
+                && pts[2] == ArrayList.class
+                && pts[3] == HashMap.class
+                && pts[4] == callback;
     }
 
     private XposedInterface.HookHandle installOrReplace(String id, Method method,
@@ -294,42 +305,6 @@ public class Main extends XposedModule {
                 .intercept(hooker);
     }
 
-    private Class<?>[] resolveParamTypes(String[] typeNames) throws ClassNotFoundException {
-        if (typeNames == null) {
-            return new Class<?>[0];
-        }
-        Class<?>[] types = new Class<?>[typeNames.length];
-        for (int i = 0; i < typeNames.length; i++) {
-            types[i] = typeForName(typeNames[i]);
-        }
-        return types;
-    }
-
-    private Class<?> typeForName(String name) throws ClassNotFoundException {
-        switch (name) {
-            case "void":
-                return void.class;
-            case "boolean":
-                return boolean.class;
-            case "byte":
-                return byte.class;
-            case "short":
-                return short.class;
-            case "char":
-                return char.class;
-            case "int":
-                return int.class;
-            case "long":
-                return long.class;
-            case "float":
-                return float.class;
-            case "double":
-                return double.class;
-            default:
-                return Class.forName(name, false, hostCl);
-        }
-    }
-
     // ------------------------------------------------------------------
     // hookers
     // ------------------------------------------------------------------
@@ -339,6 +314,9 @@ public class Main extends XposedModule {
         if (result != null) {
             msgService = result;
             dbg("captured msgService " + result.getClass().getName());
+            cacheSendMsgMethod();
+            installSendMsgHook();
+            installListenerAnchorHook();
         }
         return result;
     }
@@ -355,6 +333,18 @@ public class Main extends XposedModule {
                         + " elements=" + (args.size() >= 3 ? String.valueOf(args.get(2)) : "?"));
             }
         } catch (Throwable ignored) {
+        }
+        return chain.proceed();
+    }
+
+    private Object hookAddMsgListener(XposedInterface.Chain chain) throws Throwable {
+        try {
+            List<Object> args = chain.getArgs();
+            if (!args.isEmpty() && args.get(0) != null) {
+                installListenerHook(args.get(0));
+            }
+        } catch (Throwable t) {
+            dbg("addMsgListener intercept error: " + t);
         }
         return chain.proceed();
     }
