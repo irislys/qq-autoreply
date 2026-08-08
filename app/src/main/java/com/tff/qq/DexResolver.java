@@ -60,15 +60,16 @@ public class DexResolver implements AutoCloseable {
     }
 
     /**
-     * Creates the resolver. Loading DexKitBridge with initialize=true triggers
-     * its static block (System.loadLibrary("dexkit")), which resolves through
-     * this PathClassLoader directly against the APK - no file extraction.
+     * Creates the resolver. The module APK is used to load the DexKit Java
+     * classes (initialize=true triggers System.loadLibrary("dexkit"), which
+     * resolves through this PathClassLoader directly against the APK - no file
+     * extraction). The host APK is the actual dex parsing target.
      */
-    public static DexResolver create(String apkPath) throws Exception {
-        ClassLoader loader = new PathClassLoader(apkPath,
+    public static DexResolver create(String moduleApkPath, String hostApkPath) throws Exception {
+        ClassLoader loader = new PathClassLoader(moduleApkPath,
                 DexResolver.class.getClassLoader().getParent());
         Class<?> bridgeClass = Class.forName("org.luckypray.dexkit.DexKitBridge", true, loader);
-        Object bridge = bridgeClass.getMethod("create", String.class).invoke(null, apkPath);
+        Object bridge = bridgeClass.getMethod("create", String.class).invoke(null, hostApkPath);
 
         Class<?> clsFindClass = Class.forName("org.luckypray.dexkit.query.FindClass", true, loader);
         Class<?> clsFindMethod = Class.forName("org.luckypray.dexkit.query.FindMethod", true, loader);

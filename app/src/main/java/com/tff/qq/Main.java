@@ -161,19 +161,22 @@ public class Main extends XposedModule {
 
     private void resolveAll() {
         if (hostAppPath == null) {
-            dbg("resolution skipped: no module apk path");
+            dbg("resolution skipped: no host apk path");
             return;
         }
-        try (DexResolver dr = DexResolver.create(hostAppPath)) {
-            dr.resolve();
-            kernelServiceName = dr.kernelServiceName;
-            msgServiceImplName = dr.msgServiceImplName;
-            sendMsgName = dr.sendMsgName;
-            sendMsgParamTypes = dr.sendMsgParamTypes;
-            listenerWrapperName = dr.listenerWrapperName;
-            listenerParamType = dr.listenerParamType;
-            dbg("resolution done: kernel=" + kernelServiceName + " msgService=" + msgServiceImplName
-                    + " sendMsg=" + sendMsgName + " listener=" + listenerWrapperName);
+        try {
+            String moduleApkPath = getModuleApplicationInfo().sourceDir;
+            try (DexResolver dr = DexResolver.create(moduleApkPath, hostAppPath)) {
+                dr.resolve();
+                kernelServiceName = dr.kernelServiceName;
+                msgServiceImplName = dr.msgServiceImplName;
+                sendMsgName = dr.sendMsgName;
+                sendMsgParamTypes = dr.sendMsgParamTypes;
+                listenerWrapperName = dr.listenerWrapperName;
+                listenerParamType = dr.listenerParamType;
+                dbg("resolution done: kernel=" + kernelServiceName + " msgService=" + msgServiceImplName
+                        + " sendMsg=" + sendMsgName + " listener=" + listenerWrapperName);
+            }
         } catch (Throwable t) {
             dbg("resolution error: " + t);
         }
