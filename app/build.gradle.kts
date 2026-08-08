@@ -12,9 +12,9 @@ val localProps = Properties().apply {
 }
 
 fun signingCred(name: String, envName: String): String {
-    return System.getenv(envName) ?: localProps.getProperty(name).orEmpty().ifEmpty {
-        error("缺少签名凭据 $name：请设置环境变量 $envName 或在 local.properties 中配置 $name")
-    }
+    return System.getenv(envName)?.takeIf { it.isNotBlank() }
+        ?: localProps.getProperty(name)?.takeIf { it.isNotBlank() }
+        ?: error("缺少签名凭据 $name：请设置环境变量 $envName 或在 local.properties 中配置 $name")
 }
 
 val keystorePath = System.getenv("KAZUMI_KEYSTORE_PATH")
@@ -23,8 +23,8 @@ val keystorePath = System.getenv("KAZUMI_KEYSTORE_PATH")
 val keystoreAlias = System.getenv("KAZUMI_KEY_ALIAS")
     ?: localProps.getProperty("kazumi.keyAlias")
     ?: "kazumi"
-val storePassword = signingCred("kazumi.storePassword", "KAZUMI_STORE_PASSWORD")
-val keyPassword = signingCred("kazumi.keyPassword", "KAZUMI_KEY_PASSWORD")
+val storePass = signingCred("kazumi.storePassword", "KAZUMI_STORE_PASSWORD")
+val keyPass = signingCred("kazumi.keyPassword", "KAZUMI_KEY_PASSWORD")
 
 android {
     namespace = "com.kazumi.qqbot"
@@ -41,9 +41,9 @@ android {
     signingConfigs {
         create("release") {
             storeFile = file(keystorePath)
-            storePassword = storePassword
+            storePassword = storePass
             keyAlias = keystoreAlias
-            keyPassword = keyPassword
+            keyPassword = keyPass
             enableV1Signing = true
             enableV2Signing = true
         }
