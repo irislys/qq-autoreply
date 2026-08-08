@@ -2,6 +2,7 @@ package com.tff.qq;
 
 import android.app.Activity;
 import android.os.Bundle;
+import android.view.Gravity;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -18,6 +19,8 @@ public class TffModeActivity extends Activity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(48, 48, 48, 48);
+        root.setGravity(Gravity.CENTER);
+        root.setFitsSystemWindows(true);
 
         TextView title = new TextView(this);
         title.setText("TFF QQ 模式切换");
