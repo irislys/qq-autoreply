@@ -205,7 +205,7 @@ public class DexResolver implements AutoCloseable {
         try {
             bridge.getClass().getMethod("close").invoke(bridge);
         } catch (Throwable t) {
-            Log.e(TffLogger.TAG, "dex resolver close failed: " + t);
+            Log.e("TFFQQBot", "dex resolver close failed: " + t);
         }
     }
 }
