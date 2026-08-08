@@ -50,7 +50,7 @@ public class Main extends XposedModule {
     private static final String ID_PROBE_CTX_START = "probe.ctx.startActivity";
 
     private TffLogger logger;
-    private volatile int mode = TffLogger.MODE_NONE;
+    private volatile int mode = TffConstants.MODE_NONE;
 
     private volatile ClassLoader hostCl;
     private volatile String hostAppPath;
@@ -74,16 +74,13 @@ public class Main extends XposedModule {
 
     @Override
     public void onModuleLoaded(@NonNull ModuleLoadedParam param) {
-        if (QQ_PACKAGE.equals(param.getProcessName())) {
-            mode = TffLogger.detectAndInit(this);
-        } else {
-            mode = TffLogger.readMode(this);
-        }
-        if (mode < TffLogger.MODE_1) {
+        boolean main = QQ_PACKAGE.equals(param.getProcessName());
+        logger = new TffLogger(this);
+        mode = logger.connect(main);
+        if (mode < TffConstants.MODE_1) {
+            reportDisabled(mode);
             return;
         }
-        logger = new TffLogger(this, mode);
-        logger.start(param.getProcessName());
         dbg("module loaded in " + param.getProcessName() + " mode=" + mode);
     }
 
@@ -92,11 +89,11 @@ public class Main extends XposedModule {
         if (!QQ_PACKAGE.equals(param.getPackageName())) {
             return;
         }
-        if (mode < TffLogger.MODE_1) {
+        if (mode < TffConstants.MODE_1) {
             dbg("module disabled: mode=" + mode);
             return;
         }
-        if (mode == TffLogger.MODE_2) {
+        if (mode == TffConstants.MODE_2) {
             dbg("probe mode active, installing observation hooks");
             installProbeHooks();
             return;
@@ -115,14 +112,14 @@ public class Main extends XposedModule {
             t.interrupt();
         }
         if (logger != null) {
-            logger.stop();
+            logger.shutdown();
         }
-        if (mode != TffLogger.MODE_1 && mode != TffLogger.MODE_2) {
+        if (mode != TffConstants.MODE_1 && mode != TffConstants.MODE_2) {
             dbg("hot reload rejected: mode=" + mode);
             return false;
         }
         try {
-            param.setSavedInstanceState(mode == TffLogger.MODE_1 ? hostCl : null);
+            param.setSavedInstanceState(mode == TffConstants.MODE_1 ? hostCl : null);
         } catch (Throwable th) {
             dbg("hot reload rejected: save state failed " + th);
             return false;
@@ -133,14 +130,14 @@ public class Main extends XposedModule {
 
     @Override
     public void onHotReloaded(@NonNull HotReloadedParam param) {
-        mode = TffLogger.readMode(this);
-        if (mode != TffLogger.MODE_1 && mode != TffLogger.MODE_2) {
+        logger = new TffLogger(this);
+        mode = logger.connect(false);
+        if (mode != TffConstants.MODE_1 && mode != TffConstants.MODE_2) {
+            reportDisabled(mode);
             dbg("hot reloaded but mode invalid: " + mode + ", hooks not reinstalled");
             return;
         }
         dbg("hot reloaded, reinstalling hooks");
-        logger = new TffLogger(this, mode);
-        logger.start(param.getProcessName());
         oldHandles = new HashMap<>();
         for (XposedInterface.HookHandle h : param.getOldHookHandles()) {
             try {
@@ -148,7 +145,7 @@ public class Main extends XposedModule {
             } catch (Throwable ignored) {
             }
         }
-        if (mode == TffLogger.MODE_2) {
+        if (mode == TffConstants.MODE_2) {
             installProbeHooks();
             return;
         }
@@ -161,6 +158,20 @@ public class Main extends XposedModule {
         hostAppPath = null;
         hookClassLoaderLoad();
         startResolution();
+    }
+
+    private void reportDisabled(int m) {
+        try {
+            if (m == TffConstants.MODE_NO_ROOT) {
+                log(5, TffConstants.TAG, "权限不足(root无法获取)，TFFQQ 无法写入日志，模块已停止");
+            } else if (m == TffConstants.MODE_CONFLICT) {
+                log(5, TffConstants.TAG, "模式冲突：/data/adb/TFFQQ/1 与 /data/adb/TFFQQ/2 同时存在，"
+                        + "TFFQQ 已停止工作，请删除其一后重启 QQ");
+            } else {
+                log(5, TffConstants.TAG, "TFFQQ 初始化失败（daemon 连接/su 异常），模块已停止");
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     // ------------------------------------------------------------------
