@@ -127,7 +127,7 @@ public class DexResolver implements AutoCloseable {
                 "java.util.ArrayList",
                 "java.util.HashMap",
                 "com.tencent.qqnt.kernel.nativeinterface.IOperateCallback"
-        }, null);
+        });
         Object send = null;
         for (Object m : sendList) {
             if (msgServiceImplName.equals(mGetDeclaredClassName.invoke(m))) {
