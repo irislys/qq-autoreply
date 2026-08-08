@@ -34,7 +34,6 @@ public class Main extends XposedModule {
     }
 
     private static final String QQ_PACKAGE = "com.tencent.mobileqq";
-    private static final String TAG = "TFFQQBot";
 
     private static final String CONTACT_CLASS = "com.tencent.qqnt.kernelpublic.nativeinterface.Contact";
     private static final String CALLBACK_CLASS = "com.tencent.qqnt.kernel.nativeinterface.IOperateCallback";
@@ -43,6 +42,15 @@ public class Main extends XposedModule {
     private static final String ID_GET_MSG_SERVICE = "getMsgService";
     private static final String ID_SEND_MSG = "sendMsg";
     private static final String ID_ON_RECV_MSG = "onRecvMsg";
+
+    private static final String ID_PROBE_RESUME = "probe.onResume";
+    private static final String ID_PROBE_PAUSE = "probe.onPause";
+    private static final String ID_PROBE_START = "probe.startActivity";
+    private static final String ID_PROBE_START_FOR_RESULT = "probe.startActivityForResult";
+    private static final String ID_PROBE_CTX_START = "probe.ctx.startActivity";
+
+    private TffLogger logger;
+    private volatile int mode = TffLogger.MODE_NONE;
 
     private volatile ClassLoader hostCl;
     private volatile String hostAppPath;
@@ -66,12 +74,31 @@ public class Main extends XposedModule {
 
     @Override
     public void onModuleLoaded(@NonNull ModuleLoadedParam param) {
-        dbg("module loaded in " + param.getProcessName());
+        if (QQ_PACKAGE.equals(param.getProcessName())) {
+            mode = TffLogger.detectAndInit(this);
+        } else {
+            mode = TffLogger.readMode(this);
+        }
+        if (mode < TffLogger.MODE_1) {
+            return;
+        }
+        logger = new TffLogger(this, mode);
+        logger.start(param.getProcessName());
+        dbg("module loaded in " + param.getProcessName() + " mode=" + mode);
     }
 
     @Override
     public void onPackageReady(@NonNull PackageReadyParam param) {
         if (!QQ_PACKAGE.equals(param.getPackageName())) {
+            return;
+        }
+        if (mode < TffLogger.MODE_1) {
+            dbg("module disabled: mode=" + mode);
+            return;
+        }
+        if (mode == TffLogger.MODE_2) {
+            dbg("probe mode active, installing observation hooks");
+            installProbeHooks();
             return;
         }
         dbg("package ready, starting dynamic resolution");
@@ -87,12 +114,15 @@ public class Main extends XposedModule {
         if (t != null) {
             t.interrupt();
         }
-        if (hostCl == null) {
-            dbg("hot reload rejected: no classloader state");
+        if (logger != null) {
+            logger.stop();
+        }
+        if (mode != TffLogger.MODE_1 && mode != TffLogger.MODE_2) {
+            dbg("hot reload rejected: mode=" + mode);
             return false;
         }
         try {
-            param.setSavedInstanceState(hostCl);
+            param.setSavedInstanceState(mode == TffLogger.MODE_1 ? hostCl : null);
         } catch (Throwable th) {
             dbg("hot reload rejected: save state failed " + th);
             return false;
@@ -103,14 +133,14 @@ public class Main extends XposedModule {
 
     @Override
     public void onHotReloaded(@NonNull HotReloadedParam param) {
-        Object state = param.getSavedInstanceState();
-        if (!(state instanceof ClassLoader)) {
-            dbg("hot reloaded but classloader state lost, hooks not reinstalled");
+        mode = TffLogger.readMode(this);
+        if (mode != TffLogger.MODE_1 && mode != TffLogger.MODE_2) {
+            dbg("hot reloaded but mode invalid: " + mode + ", hooks not reinstalled");
             return;
         }
         dbg("hot reloaded, reinstalling hooks");
-        hostCl = (ClassLoader) state;
-        hostAppPath = null;
+        logger = new TffLogger(this, mode);
+        logger.start(param.getProcessName());
         oldHandles = new HashMap<>();
         for (XposedInterface.HookHandle h : param.getOldHookHandles()) {
             try {
@@ -118,6 +148,17 @@ public class Main extends XposedModule {
             } catch (Throwable ignored) {
             }
         }
+        if (mode == TffLogger.MODE_2) {
+            installProbeHooks();
+            return;
+        }
+        Object state = param.getSavedInstanceState();
+        if (!(state instanceof ClassLoader)) {
+            dbg("hot reloaded but classloader state lost, hooks not reinstalled");
+            return;
+        }
+        hostCl = (ClassLoader) state;
+        hostAppPath = null;
         hookClassLoaderLoad();
         startResolution();
     }
@@ -426,6 +467,146 @@ public class Main extends XposedModule {
     }
 
     // ------------------------------------------------------------------
+    // probe mode: observation hooks, record only, never modify
+    // ------------------------------------------------------------------
+
+    private void installProbeHooks() {
+        try {
+            Class<?> activity = Class.forName("android.app.Activity");
+            Class<?> ctxWrapper = Class.forName("android.content.ContextWrapper");
+            installProbeHook(ID_PROBE_RESUME, activity, "onResume",
+                    findDeclaredMethod(activity, "onResume"), this::hookProbeResume);
+            installProbeHook(ID_PROBE_PAUSE, activity, "onPause",
+                    findDeclaredMethod(activity, "onPause"), this::hookProbePause);
+            installProbeHook(ID_PROBE_START, activity, "startActivity",
+                    findDeclaredMethod(activity, "startActivity", android.content.Intent.class),
+                    this::hookProbeStartActivity);
+            installProbeHook(ID_PROBE_START_FOR_RESULT, activity, "startActivityForResult",
+                    findDeclaredMethod(activity, "startActivityForResult",
+                            android.content.Intent.class, int.class),
+                    this::hookProbeStartActivity);
+            installProbeHook(ID_PROBE_CTX_START, ctxWrapper, "startActivity",
+                    findDeclaredMethod(ctxWrapper, "startActivity", android.content.Intent.class),
+                    this::hookProbeStartActivity);
+        } catch (Throwable t) {
+            dbg("probe hooks failed: " + t);
+        }
+    }
+
+    private void installProbeHook(String id, Class<?> cls, String name, Method method,
+                                  XposedInterface.Hooker hooker) {
+        if (installed.contains(id) || method == null) {
+            return;
+        }
+        try {
+            method.setAccessible(true);
+            installOrReplace(id, method, hooker);
+            installed.add(id);
+            dbg("probe hooked " + cls.getName() + "." + name);
+        } catch (Throwable t) {
+            dbg("probe hook pending " + id + ": " + t);
+        }
+    }
+
+    private Object hookProbeResume(XposedInterface.Chain chain) throws Throwable {
+        try {
+            Object th = chain.getThisObject();
+            dbg("页面: " + (th == null ? "?" : th.getClass().getName()) + stackTop());
+        } catch (Throwable t) {
+            dbg("probe onResume error: " + t);
+        }
+        return chain.proceed();
+    }
+
+    private Object hookProbePause(XposedInterface.Chain chain) throws Throwable {
+        try {
+            Object th = chain.getThisObject();
+            dbg("离开: " + (th == null ? "?" : th.getClass().getName()) + stackTop());
+        } catch (Throwable t) {
+            dbg("probe onPause error: " + t);
+        }
+        return chain.proceed();
+    }
+
+    private Object hookProbeStartActivity(XposedInterface.Chain chain) throws Throwable {
+        try {
+            List<Object> args = chain.getArgs();
+            Object intent = args.isEmpty() ? null : args.get(0);
+            Object th = chain.getThisObject();
+            dbg("跳转: " + (th == null ? "?" : th.getClass().getName())
+                    + " | " + intentSummary(intent) + stackTop());
+        } catch (Throwable t) {
+            dbg("probe startActivity error: " + t);
+        }
+        return chain.proceed();
+    }
+
+    private String intentSummary(Object intent) {
+        try {
+            if (!(intent instanceof android.content.Intent)) {
+                return String.valueOf(intent);
+            }
+            android.content.Intent i = (android.content.Intent) intent;
+            StringBuilder sb = new StringBuilder("Intent{");
+            sb.append("action=").append(i.getAction());
+            sb.append(", data=").append(i.getData());
+            sb.append(", type=").append(i.getType());
+            sb.append(", comp=").append(i.getComponent());
+            sb.append(", flags=0x").append(Integer.toHexString(i.getFlags()));
+            android.os.Bundle ex = i.getExtras();
+            if (ex != null && !ex.isEmpty()) {
+                sb.append(", extras{");
+                int shown = 0;
+                for (String k : ex.keySet()) {
+                    if (shown++ >= 5) {
+                        sb.append("...");
+                        break;
+                    }
+                    Object v = ex.get(k);
+                    sb.append(k).append('=').append(String.valueOf(v)).append(';');
+                }
+                sb.append('}');
+            }
+            sb.append('}');
+            String s = sb.toString();
+            return s.length() > 600 ? s.substring(0, 600) : s;
+        } catch (Throwable t) {
+            return String.valueOf(intent);
+        }
+    }
+
+    private String stackTop() {
+        try {
+            StackTraceElement[] st = Thread.currentThread().getStackTrace();
+            StringBuilder sb = new StringBuilder(" 栈:");
+            int shown = 0;
+            for (StackTraceElement e : st) {
+                String cn = e.getClassName();
+                if (cn.startsWith("com.tff.qq") || cn.startsWith("io.github.libxposed")
+                        || cn.startsWith("java.lang.Thread") || cn.startsWith("android.os.Looper")) {
+                    continue;
+                }
+                sb.append('\n').append("    at ").append(cn).append('.').append(e.getMethodName())
+                        .append('(').append(e.getFileName()).append(':').append(e.getLineNumber()).append(')');
+                if (++shown >= 8) {
+                    break;
+                }
+            }
+            return sb.toString();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    private Method findDeclaredMethod(Class<?> cls, String name, Class<?>... params) {
+        try {
+            return cls.getDeclaredMethod(name, params);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    // ------------------------------------------------------------------
     // message handling
     // ------------------------------------------------------------------
 
@@ -572,7 +753,9 @@ public class Main extends XposedModule {
 
     private void dbg(String msg) {
         try {
-            log(4, TAG, msg);
+            if (logger != null) {
+                logger.log(msg);
+            }
         } catch (Throwable ignored) {
         }
     }
