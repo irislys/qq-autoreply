@@ -70,9 +70,6 @@ android {
             excludes += "**/proguard.txt"
             excludes += "**/kotlin/**"
         }
-        jniLibs {
-            useLegacyPackaging = true
-        }
     }
 
     lint {

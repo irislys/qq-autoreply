@@ -2,15 +2,6 @@ package com.tff.qq;
 
 import androidx.annotation.NonNull;
 
-import org.luckypray.dexkit.DexKitBridge;
-import org.luckypray.dexkit.query.FindClass;
-import org.luckypray.dexkit.query.FindMethod;
-import org.luckypray.dexkit.query.matchers.ClassMatcher;
-import org.luckypray.dexkit.query.matchers.MethodMatcher;
-import org.luckypray.dexkit.result.ClassData;
-import org.luckypray.dexkit.result.MethodData;
-import org.luckypray.dexkit.result.MethodDataList;
-
 import java.lang.reflect.Executable;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -25,13 +16,6 @@ import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
 
 public class Main extends XposedModule {
-
-    static {
-        try {
-            System.loadLibrary("dexkit");
-        } catch (Throwable ignored) {
-        }
-    }
 
     private static final String QQ_PACKAGE = "com.tencent.mobileqq";
 
@@ -175,93 +159,23 @@ public class Main extends XposedModule {
         t.start();
     }
 
-    private void resolveAll() throws Throwable {
-        ClassLoader cl = hostCl;
-        try (DexKitBridge bridge = hostAppPath != null
-                ? DexKitBridge.create(hostAppPath)
-                : DexKitBridge.create(cl, true)) {
-            resolveKernel(bridge);
-            resolveListener(bridge);
-        }
-        dbg("resolution done: kernel=" + kernelServiceName + " msgService=" + msgServiceImplName
-                + " sendMsg=" + sendMsgName + " listener=" + listenerWrapperName);
-    }
-
-    private void resolveKernel(DexKitBridge bridge) {
-        MethodDataList methods = bridge.findClass(FindClass.create()
-                        .searchPackages("com.tencent.qqnt")
-                        .matcher(ClassMatcher.create()))
-                .findMethod(FindMethod.create()
-                        .matcher(MethodMatcher.create().name("getMsgService").paramCount(0)));
-        MethodData getMsgService = null;
-        for (MethodData m : methods) {
-            String ret = m.getReturnTypeName();
-            if (ret != null && ret.contains("MsgService")) {
-                getMsgService = m;
-                break;
-            }
-        }
-        if (getMsgService == null) {
-            getMsgService = methods.firstOrNull();
-        }
-        if (getMsgService == null) {
+    private void resolveAll() {
+        if (hostAppPath == null) {
+            dbg("resolution skipped: no module apk path");
             return;
         }
-        kernelServiceName = getMsgService.getDeclaredClassName();
-        msgServiceImplName = getMsgService.getReturnTypeName();
-        if (msgServiceImplName == null) {
-            return;
-        }
-        MethodDataList sendList = bridge.findClass(FindClass.create()
-                        .searchPackages("com.tencent.qqnt")
-                        .matcher(ClassMatcher.create()))
-                .findMethod(FindMethod.create()
-                        .matcher(MethodMatcher.create()
-                                .paramCount(5)
-                                .paramTypes("long",
-                                        CONTACT_CLASS,
-                                        "java.util.ArrayList",
-                                        "java.util.HashMap",
-                                        CALLBACK_CLASS)));
-        MethodData send = null;
-        for (MethodData m : sendList) {
-            if (msgServiceImplName.equals(m.getDeclaredClassName())) {
-                send = m;
-                break;
-            }
-        }
-        if (send == null) {
-            for (MethodData m : sendList) {
-                String dc = m.getDeclaredClassName();
-                if (dc != null && dc.contains("MsgService")) {
-                    send = m;
-                    break;
-                }
-            }
-        }
-        if (send == null) {
-            send = sendList.firstOrNull();
-        }
-        if (send != null) {
-            sendMsgName = send.getMethodName();
-            List<String> pts = send.getParamTypeNames();
-            sendMsgParamTypes = pts == null ? null : pts.toArray(new String[0]);
-        }
-    }
-
-    private void resolveListener(DexKitBridge bridge) {
-        MethodDataList methods = bridge.findClass(FindClass.create()
-                        .searchPackages("com.tencent.qqnt")
-                        .matcher(ClassMatcher.create()))
-                .findMethod(FindMethod.create()
-                        .matcher(MethodMatcher.create().name("onRecvMsg").paramCount(1)));
-        for (MethodData m : methods) {
-            List<String> pts = m.getParamTypeNames();
-            if (pts != null && !pts.isEmpty() && "java.util.List".equals(pts.get(0))) {
-                listenerWrapperName = m.getDeclaredClassName();
-                listenerParamType = pts.get(0);
-                break;
-            }
+        try (DexResolver dr = DexResolver.create(hostAppPath)) {
+            dr.resolve();
+            kernelServiceName = dr.kernelServiceName;
+            msgServiceImplName = dr.msgServiceImplName;
+            sendMsgName = dr.sendMsgName;
+            sendMsgParamTypes = dr.sendMsgParamTypes;
+            listenerWrapperName = dr.listenerWrapperName;
+            listenerParamType = dr.listenerParamType;
+            dbg("resolution done: kernel=" + kernelServiceName + " msgService=" + msgServiceImplName
+                    + " sendMsg=" + sendMsgName + " listener=" + listenerWrapperName);
+        } catch (Throwable t) {
+            dbg("resolution error: " + t);
         }
     }
 
