@@ -1,6 +1,30 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.agp.app)
 }
+
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) {
+        f.inputStream().use { load(it) }
+    }
+}
+
+fun signingCred(name: String, envName: String): String {
+    return System.getenv(envName) ?: localProps.getProperty(name).orEmpty().ifEmpty {
+        error("缺少签名凭据 $name：请设置环境变量 $envName 或在 local.properties 中配置 $name")
+    }
+}
+
+val keystorePath = System.getenv("KAZUMI_KEYSTORE_PATH")
+    ?: localProps.getProperty("kazumi.keystorePath")
+    ?: rootProject.file("release.keystore").absolutePath
+val keystoreAlias = System.getenv("KAZUMI_KEY_ALIAS")
+    ?: localProps.getProperty("kazumi.keyAlias")
+    ?: "kazumi"
+val storePassword = signingCred("kazumi.storePassword", "KAZUMI_STORE_PASSWORD")
+val keyPassword = signingCred("kazumi.keyPassword", "KAZUMI_KEY_PASSWORD")
 
 android {
     namespace = "com.kazumi.qqbot"
@@ -16,10 +40,10 @@ android {
 
     signingConfigs {
         create("release") {
-            storeFile = rootProject.file("release.keystore")
-            storePassword = "kazumiqqbot"
-            keyAlias = "kazumi"
-            keyPassword = "kazumiqqbot"
+            storeFile = file(keystorePath)
+            storePassword = storePassword
+            keyAlias = keystoreAlias
+            keyPassword = keyPassword
             enableV1Signing = true
             enableV2Signing = true
         }
@@ -46,6 +70,9 @@ android {
             excludes += "**/proguard.txt"
             excludes += "**/kotlin/**"
         }
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 
     lint {
@@ -57,4 +84,5 @@ android {
 dependencies {
     compileOnly(libs.libxposed.api)
     compileOnly(libs.androidx.annotation)
+    implementation(libs.dexkit.lib)
 }

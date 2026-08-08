@@ -21,6 +21,16 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Restore signing keystore
+        env:
+          KAZUMI_KEYSTORE_B64: ${{ secrets.KAZUMI_KEYSTORE_B64 }}
+          KAZUMI_STORE_PASSWORD: ${{ secrets.KAZUMI_STORE_PASSWORD }}
+          KAZUMI_KEY_PASSWORD: ${{ secrets.KAZUMI_KEY_PASSWORD }}
+        run: |
+          echo "$KAZUMI_KEYSTORE_B64" | base64 -d > release.keystore
+          echo "KAZUMI_STORE_PASSWORD=$KAZUMI_STORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "KAZUMI_KEY_PASSWORD=$KAZUMI_KEY_PASSWORD" >> "$GITHUB_ENV"
+
       - name: Build with Gradle
         run: chmod +x gradlew && ./gradlew assembleRelease --stacktrace
 
